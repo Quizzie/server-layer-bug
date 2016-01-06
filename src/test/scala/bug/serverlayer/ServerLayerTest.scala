@@ -76,7 +76,7 @@ class ServerLayerTest extends TestKit(ActorSystem("test-system"))
       case SendBytes(data) => data
     }
     val bottom = Flow[ByteString].map(SessionBytes(session, _))
-    BidiFlow.wrap(top, bottom)(Keep.none)
+    BidiFlow.fromFlowsMat(top, bottom)(Keep.none)
   }
 
   /** Tests sending a request through the server layer
@@ -96,7 +96,7 @@ class ServerLayerTest extends TestKit(ActorSystem("test-system"))
           serverLayer
             .atop(stage)
             .joinMat(
-              Flow.wrap(byteSink, byteSource)(Keep.both))(Keep.right))(Keep.both)
+              Flow.fromSinkAndSourceMat(byteSink, byteSource)(Keep.both))(Keep.right))(Keep.both)
         .toMat(httpSink) {
           case ((httpPub, (byteSub, bytePub)), httpSub) => ((httpPub, httpSub), (bytePub, byteSub))
         }
@@ -107,8 +107,15 @@ class ServerLayerTest extends TestKit(ActorSystem("test-system"))
     bytePub.sendNext(requestA)
 
     // Receive the request and parse the headers
+    // Have to use within(duration) because of issue #19326
     httpSub.request(10)
-    val receivedRequest = httpSub.expectNext()
+    val receivedRequest = {
+      var request: HttpRequest = null
+      httpSub.within(duration) {
+        request = httpSub.expectNext()
+      }
+      request
+    }
     receivedRequest.method should equal(PUT)
 
     // Send the remainder of the request and complete
@@ -127,8 +134,16 @@ class ServerLayerTest extends TestKit(ActorSystem("test-system"))
     httpPub.sendNext(response)
 
     // Receive the response
+    // Have to use within(duration) because of issue #19326
     byteSub.request(10)
-    val receivedResponse = byteSub.expectNext()
+    val receivedResponse = {
+      var response: ByteString = null
+      byteSub.within(duration) {
+        response = byteSub.expectNext()
+        // Test fails here (stream completes instead of getting the response)
+      }
+      response
+    }
     println("Received response:\n" + receivedResponse.utf8String)
   }
 

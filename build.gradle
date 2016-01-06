@@ -10,7 +10,7 @@ ext {
 	scala = '2.11'
 	scalaVersion = scala + '.7'
 	akkaVersion = '2.4.1'
-	akkaStreamVersion = '1.0'
+	akkaStreamVersion = '2.0.1'
 	testNGVersion = '6.9.9'
 	scalatestVersion = '2.2.5'
 	mockitoVersion = '1.10.19'
