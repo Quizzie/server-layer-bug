@@ -28,6 +28,7 @@ build/
 # specific files  (root/.cache, root/.project, ....)  i.e. IDEA / Eclipse specific
 #
 #
+/gradle.properties
 /.cache
 /.classpath
 /.project
