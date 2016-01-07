@@ -100,10 +100,9 @@ class ServerLayerTest extends TestKit(ActorSystem("test-system"))
 
     // Drain the complete data from the received request
     val requestFuture = receivedRequest.entity.toStrict(duration)
-    val requestData = whenReady(requestFuture) {
-      case strict => strict.data
+    whenReady(requestFuture) {
+      strict => strict.data.utf8String should equal("abc")
     }
-    requestData.utf8String should equal("abc")
 
     // Send the response back
     httpPub.sendNext(response)
