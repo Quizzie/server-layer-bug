@@ -40,16 +40,14 @@ class ServerLayerTest extends TestKit(ActorSystem("test-system"))
   implicit val materializer = ActorMaterializer()
   implicit val duration = 2000.millis
 
-  // HTTP request split into three ByteStrings
+  // HTTP request as one ByteStrings
   val requestA: ByteString = ByteString(
     "PUT / HTTP/1.1\r\n" +
       "Host: localhost\r\n" +
       "Content-Type: text/plain\r\n" +
-      "Content-Length: 9" +
+      "Content-Length: 3" +
       "\r\n\r\n" +
       "abc")
-  val requestB = ByteString("def")
-  val requestC = ByteString("ghi")
 
   // HTTP response to the request
   val response = HttpResponse(StatusCodes.OK)
@@ -91,31 +89,27 @@ class ServerLayerTest extends TestKit(ActorSystem("test-system"))
 
     val ((httpPub, httpSub), (bytePub, byteSub)) = runnable.run()
 
-    // Send the first part of the request
+    // Send the request and complete the in stream
     bytePub.sendNext(requestA)
+    bytePub.sendComplete()
 
     // Receive the request and parse the headers
-    httpSub.request(10)
+    httpSub.request(1)
     val receivedRequest = httpSub.expectNext()
     receivedRequest.method should equal(PUT)
-
-    // Send the remainder of the request and complete
-    bytePub.sendNext(requestB)
-    bytePub.sendNext(requestC)
-    bytePub.sendComplete()
 
     // Drain the complete data from the received request
     val requestFuture = receivedRequest.entity.toStrict(duration)
     val requestData = whenReady(requestFuture) {
       case strict => strict.data
     }
-    requestData.utf8String should equal("abcdefghi")
+    requestData.utf8String should equal("abc")
 
     // Send the response back
     httpPub.sendNext(response)
 
     // Receive the response
-    byteSub.request(10)
+    byteSub.request(1)
     val receivedResponse = byteSub.expectNext()
     println("Received response:\n" + receivedResponse.utf8String)
   }
