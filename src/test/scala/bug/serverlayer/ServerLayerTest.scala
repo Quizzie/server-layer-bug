@@ -13,6 +13,7 @@ import akka.stream.io.SendBytes
 import akka.stream.io.SessionBytes
 import akka.stream.io.SslTlsInbound
 import akka.stream.io.SslTlsOutbound
+import akka.stream.io.SslTlsPlacebo
 import akka.stream.scaladsl.BidiFlow
 import akka.stream.scaladsl.Flow
 import akka.stream.scaladsl.Keep
@@ -34,21 +35,19 @@ import org.testng.annotations.Test
 
 /** Tests the Http().serverLayer used as an HTTP parser. */
 class ServerLayerTest extends TestKit(ActorSystem("test-system"))
-  with Suite with FlatSpecLike with Matchers with ScalaFutures {
+with Suite with FlatSpecLike with Matchers with ScalaFutures {
 
   implicit val materializer = ActorMaterializer()
   implicit val duration = 2000.millis
 
-  // HTTP request split into three ByteStrings
+  // HTTP request as one ByteStrings
   val requestA: ByteString = ByteString(
     "PUT / HTTP/1.1\r\n" +
       "Host: localhost\r\n" +
       "Content-Type: text/plain\r\n" +
-      "Content-Length: 9" +
+      "Content-Length: 3" +
       "\r\n\r\n" +
       "abc")
-  val requestB = ByteString("def")
-  val requestC = ByteString("ghi")
 
   // HTTP response to the request
   val response = HttpResponse(StatusCodes.OK)
@@ -59,25 +58,13 @@ class ServerLayerTest extends TestKit(ActorSystem("test-system"))
   val byteSource: Source[ByteString, TestPublisher.Probe[ByteString]] = TestSource.probe[ByteString]
   val byteSink: Sink[ByteString, TestSubscriber.Probe[ByteString]] = TestSink.probe[ByteString]
 
-  /* HttpResponse ~> +-------------+ ~> SslTlsOutbound
-   *                 | serverLayer |
-   *  HttpRequest <~ +-------------+ <~ SslTlsInbound
+  /* HttpResponse ~> +-------------+ ~> +------------+ ~> ByteString
+   *                 | serverLayer |    | sslPlacebo |
+   *  HttpRequest <~ +-------------+ <~ +------------+ ~> ByteString
    */
-  val serverLayer: BidiFlow[HttpResponse, SslTlsOutbound, SslTlsInbound, HttpRequest, Unit] =
-    Http().serverLayer
+  val serverLayer: BidiFlow[HttpResponse, ByteString, ByteString, HttpRequest, Unit] =
+    Http().serverLayer.atop(SslTlsPlacebo.forScala)
 
-  /* SslTlsOutbound ~> +-------+ ~> ByteString
-   *                   | stage |
-   *  SslTlsInbound <~ +-------+ <~ ByteString
-   */
-  val stage: BidiFlow[SslTlsOutbound, ByteString, ByteString, SslTlsInbound, Unit] = {
-    val session = SSLContext.getDefault.createSSLEngine.getSession
-    val top = Flow[SslTlsOutbound].collect {
-      case SendBytes(data) => data
-    }
-    val bottom = Flow[ByteString].map(SessionBytes(session, _))
-    BidiFlow.fromFlowsMat(top, bottom)(Keep.none)
-  }
 
   /** Tests sending a request through the server layer
     * and then sending a response back.
@@ -85,16 +72,15 @@ class ServerLayerTest extends TestKit(ActorSystem("test-system"))
   @Test(groups = Array("unit"))
   def testServerLayer(): Unit = {
 
-    /* httpSource ~> +-------------+ ~> +-------+ ~> byteSink
-     *               | serverLayer |    | stage |
-     *   httpSink <~ +-------------+ <~ +-------+ <~ byteSource
+    /* httpSource ~> +-------------+ ~> byteSink
+     *               | serverLayer |
+     *   httpSink <~ +-------------+ <~ byteSource
      */
 
     val runnable =
       httpSource
         .viaMat(
           serverLayer
-            .atop(stage)
             .joinMat(
               Flow.fromSinkAndSourceMat(byteSink, byteSource)(Keep.both))(Keep.right))(Keep.both)
         .toMat(httpSink) {
@@ -103,12 +89,13 @@ class ServerLayerTest extends TestKit(ActorSystem("test-system"))
 
     val ((httpPub, httpSub), (bytePub, byteSub)) = runnable.run()
 
-    // Send the first part of the request
+    // Send the request and complete the in stream
     bytePub.sendNext(requestA)
+    bytePub.sendComplete()
 
     // Receive the request and parse the headers
     // Have to use within(duration) because of issue #19326
-    httpSub.request(10)
+    httpSub.request(1)
     val receivedRequest = {
       var request: HttpRequest = null
       httpSub.within(duration) {
@@ -118,24 +105,18 @@ class ServerLayerTest extends TestKit(ActorSystem("test-system"))
     }
     receivedRequest.method should equal(PUT)
 
-    // Send the remainder of the request and complete
-    bytePub.sendNext(requestB)
-    bytePub.sendNext(requestC)
-    bytePub.sendComplete()
-
     // Drain the complete data from the received request
     val requestFuture = receivedRequest.entity.toStrict(duration)
-    val requestData = whenReady(requestFuture) {
-      case strict => strict.data
+    whenReady(requestFuture) {
+      strict => strict.data.utf8String should equal("abc")
     }
-    requestData.utf8String should equal("abcdefghi")
 
     // Send the response back
     httpPub.sendNext(response)
 
     // Receive the response
     // Have to use within(duration) because of issue #19326
-    byteSub.request(10)
+    byteSub.request(1)
     val receivedResponse = {
       var response: ByteString = null
       byteSub.within(duration) {
@@ -144,6 +125,7 @@ class ServerLayerTest extends TestKit(ActorSystem("test-system"))
       }
       response
     }
+
     println("Received response:\n" + receivedResponse.utf8String)
   }
 
